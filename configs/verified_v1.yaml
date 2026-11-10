@@ -1,13 +1,2 @@
-name: modularcua-verified-v1
-extends: core_v0.yaml
-modules:
-  planning: false
-  memory: false
-  verification: true
-  recovery: false # targeted repair is not implemented; UNKNOWN before-finish audit only.
-  skills: false
-  subagents: false
-verification:
-  before_finish_audit: true
-  max_recovery_attempts_per_requirement: 2
-  visual_verifier: false # deterministic/observable checks first; no verifier deployed until validated.
+name: modularcua-egc-observe-only-v1
+extends: egc_observe_only.yaml

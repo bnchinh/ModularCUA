@@ -20,7 +20,7 @@ class FakeAuxModel:
         self.requests = []
         self.on_call = on_call
 
-    def complete_aux(self, messages, *, max_tokens):
+    def complete_aux(self, messages, *, max_tokens, disable_thinking=True):
         self.requests.append(messages)
         if self.on_call:
             value = self.on_call(messages)
@@ -187,7 +187,7 @@ def test_malformed_json_is_not_repaired(tmp_path):
         return {"raw": "not-json"}
 
     class MalformedModel(FakeAuxModel):
-        def complete_aux(self, messages, *, max_tokens):
+        def complete_aux(self, messages, *, max_tokens, disable_thinking=True):
             return {"content": "<think>not available as structured output", "_provider": {
                 "request_id": "bad", "usage": {"prompt_tokens": 1, "completion_tokens": 2},
                 "latency_seconds": 0.01, "finish_reason": "stop"}}
@@ -209,7 +209,7 @@ def test_unsupported_pass_is_rejected(tmp_path):
     payload_ref = runtime._record_evidence(finish, text="I did it.", source_type="ACTOR_FINISH_CLAIM")
 
     class PassModel(FakeAuxModel):
-        def complete_aux(self, messages, *, max_tokens):
+        def complete_aux(self, messages, *, max_tokens, disable_thinking=True):
             user = request_payload(messages)
             req = user["requirements"]["requirements"][0]
             return {"content": json.dumps({"snapshot_event_id": user["snapshot_event_id"], "verdicts": [{

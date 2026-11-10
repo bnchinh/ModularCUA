@@ -108,6 +108,27 @@ class AgentLoop:
                                                 usage=provider.get("usage", {}), latency_seconds=provider.get("latency_seconds"),
                                                 request_id=provider.get("request_id"), finish_reason=provider.get("finish_reason"))
             if not tool_calls:
+                if self.egc:
+                    egc_gate = self.egc.before_finish(response_event, text)
+                    if egc_gate and egc_gate.get("action") == "FEEDBACK":
+                        messages.append({"role": "assistant", "content": text})
+                        messages.append({"role": "user", "content": egc_gate["message"]})
+                        continue
+                    if egc_gate and egc_gate.get("action") == "BLOCK":
+                        blocked_event = self.journal.append(
+                            "agent_finish_blocked", model_turn_id=turn,
+                            model_response_event_id=response_event["event_id"],
+                            reason="EGC pre-finish verification remained unresolved",
+                            unresolved_requirements=egc_gate.get("unresolved_requirements", []),
+                        )
+                        self.modules.dispatch("task_end", {
+                            "turn": turn, "status": "verification_inconclusive"})
+                        return {"status": "verification_inconclusive", "turns": turn,
+                                "tool_calls": self.tool_calls, "input_tokens": self.input_tokens,
+                                "output_tokens": self.output_tokens, "messages": messages,
+                                "blocked_event_id": blocked_event["event_id"],
+                                "pyautogui_action_attempts": self.pyautogui_action_attempts,
+                                "pyautogui_actions_executed": self.pyautogui_actions_executed}
                 gates = self.modules.dispatch("before_finish", {"turn": turn, "text": text})
                 if gates:
                     messages.append({"role": "assistant", "content": text})

@@ -422,14 +422,15 @@ def test_p0_runner_has_no_top_level_egc_import():
     assert not any(name.startswith("modularcua.egc") for name in top_level_imports)
 
 
-def test_verified_config_inherits_core_without_changing_actor_settings():
+def test_legacy_verified_config_name_resolves_to_observe_only_settings():
     cfg = _load_config(Path("ModularCUA/configs/verified_v1.yaml"))
-    assert cfg["name"] == "modularcua-verified-v1"
+    assert cfg["name"] == "modularcua-egc-observe-only-v1"
     assert cfg["model"]["revision"] == "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
     assert cfg["agent"]["max_model_steps"] == 150
-    assert cfg["modules"]["verification"] is True
+    assert cfg["modules"]["verification"] is False
     assert cfg["modules"]["memory"] is False
     assert cfg["modules"]["recovery"] is False
+    assert cfg["egc"]["modules"]["history_summarizer"] is False
 
 
 def test_interrupted_runner_records_not_measured_and_partial_counts(tmp_path):

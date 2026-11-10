@@ -1,13 +1,24 @@
 # Known limitations
 
-1. The guest bridge currently runs `IPython.core.interactiveshell.InteractiveShell`, not a standalone Jupyter kernel over ZeroMQ. It provides persistent Python namespace and IPython cell behavior, but lacks the exact Jupyter message protocol, IOPub streaming, HMAC framing, kernel state snapshot/revival, interruption and restart semantics of Prime.
-2. The Python OpenAI SDK uses Chat Completions function calling. Prime's pinned Pi AI adapter uses a different internal message/tool representation and may shape Qwen reasoning blocks, tool calls, images, errors and output caps differently. Prompts and endpoint are source-matched where observable, but requests are not byte-identical.
-3. The current P0 system prompt is ModularCUA-authored and independent. It does not reproduce Prime's hidden default prompt, Agent-S `TOOL_SYSTEM_PROMPT`, or exact Prime request construction. This is an independent harness inspired by Prime, not a source-faithful Agent-S prompt run.
-4. The OSWorld actor runs model-generated Python in its guest account. The guest bridge is an execution interface, not a sandbox.
-5. The current context compactor is deterministic and character-bounded; it is not the Prime summary model or its token-aware policy. No real run has forced a compaction yet.
-6. Guest stdout/stderr and screenshot image transfer are implemented but require live validation against the actual OSWorld server and Qwen vLLM content schema.
-7. The current independent P0 runner does not stage Agent-S seed interfaces. Its capability bootstrap defines guest-side helpers, but generated Python can still access other installed Python modules; this is not a security boundary.
-8. V1 captures generic filesystem metadata changes under Desktop/Documents/Downloads and `.local/share`; it does not hash or parse every changed file, independently verify calendar fields, or perform transactional repair. V1 should not be described as a completed verifier/repair system.
-9. The 2026-11-05 P0 Task001 attempt was stopped before evaluation. Its run journal records actual interaction but no official score; it cannot be used for a B0/B1 or P0/P1 performance comparison. The five-task P0/P1 matrix has not been run.
-10. The run loop currently does not reliably count individual GUI actions embedded inside arbitrary IPython code. Report IPython calls separately and leave the GUI action count unknown unless a validated trace parser or instrumentation supplies it.
-11. The current EGC runtime is not yet an active P1 controller: module outputs are logged/committed, but the agent loop does not consistently pass those outputs into actor continuation or enforce a final termination decision. Do not run or report it as active Evidence-Grounded Control until the runtime hook is completed and validated.
+Updated 2026-11-10. This list describes the current prototype and the historical runs included in `reports/`.
+
+## Runtime and environment
+
+1. The guest bridge uses `IPython.core.interactiveshell.InteractiveShell` over the OSWorld `/execute` endpoint and a file mailbox. It does not implement Prime's Jupyter/ZeroMQ protocol, IOPub streaming, HMAC framing, kernel snapshot/revival, or complete restart semantics.
+2. The model adapter uses OpenAI Chat Completions. It is not wire-compatible with Prime's pinned Pi AI adapter; provider-specific reasoning, tool-call, image, error, and output-cap behavior may differ.
+3. Model-generated Python runs in the OSWorld guest account. The capability registry documents helper operations but does not restrict Python imports, filesystem access, processes, or network.
+4. GUI action instrumentation observes public PyAutoGUI calls and selected helpers. Arbitrary shell, application API, or nested library mutations may be missed; a zero counter is not evidence of no state change.
+5. Context compaction is deterministic and character-bounded, not token-aware. The auxiliary history summarizer is disabled by default after historical calls exceeded the served context window. Re-enable it only after bounding the exact serialized prompt and reserving room for model output.
+
+## Evidence-Grounded Control
+
+6. Historical P1 runs did not demonstrate active EGC: requirement extraction failed schema validation in all five audited episodes, no Actor feedback was delivered, and no recovery action was executed.
+7. Current source changes request non-thinking Qwen auxiliary output and retry one truncated response with a bounded token cap. These changes are not yet validated against the frozen endpoint; they do not by themselves establish correct contracts.
+8. The runtime has no complete task-specific semantic verifier or bounded repair loop. Filesystem metadata changes and structural format checks are evidence of activity, not proof that the requested task postconditions hold.
+9. P1 is observe-only by default. An opt-in experimental gate can request evidence and block unresolved finishes, but it uses the current model-based verifier, is not enabled in the checked-in configs, and has not been validated live. An absent/invalid contract or verifier must remain `UNKNOWN`, never a successful verification.
+
+## Benchmark interpretation
+
+10. The current five-task P0 and P1 aggregates each contain one rollout per task. The P1 chain failed, so score differences do not estimate the effect of correctly operating EGC; Task061 also shared an inference service concurrently across conditions.
+11. The P0 and P1 reports refer to exact recorded source/config snapshots. Preserve those historical manifests and do not attribute the results to later code changes without a new run.
+12. The reports are summaries; raw trajectories, screenshots, VM images, model weights, and benchmark assets are excluded from the public source bundle. Reproduction requires the pinned compatible OSWorld checkout and external infrastructure.

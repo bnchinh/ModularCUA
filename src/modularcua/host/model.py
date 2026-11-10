@@ -48,13 +48,16 @@ class OpenAICompatibleModel:
         }
         return raw
 
-    def complete_aux(self, messages: list[dict[str, Any]], *, max_tokens: int) -> dict[str, Any]:
-        """Auxiliary EGC inference, using the same frozen endpoint but no executable tools."""
+    def complete_aux(self, messages: list[dict[str, Any]], *, max_tokens: int,
+                     disable_thinking: bool = True) -> dict[str, Any]:
+        """Auxiliary EGC inference with optional Qwen thinking disabled."""
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens,
         }
+        if disable_thinking:
+            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         started = time.monotonic()
         response = self.client.chat.completions.create(**kwargs)
         latency = time.monotonic() - started

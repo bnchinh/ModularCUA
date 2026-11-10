@@ -268,6 +268,15 @@ def _record_interruption(journal: SessionJournal, manifest_path: Path,
         })
     run_manifest["partial_counts"] = partial
     run_manifest["interruption_event_id"] = event["event_id"]
+    module_calls_path = manifest_path.parent / "module_calls.jsonl"
+    if module_calls_path.is_file() and isinstance(run_manifest.get("egc"), dict):
+        try:
+            run_manifest["egc"]["actor_feedback_injected"] = any(
+                json.loads(line).get("event_type") == "egc_actor_feedback_delivered"
+                for line in module_calls_path.read_text(encoding="utf-8").splitlines()
+                if line.strip())
+        except Exception:
+            run_manifest["egc"]["actor_feedback_injected"] = None
     (manifest_path.parent / "official_result.json").write_text(
         json.dumps(result, indent=2), encoding="utf-8")
     manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
@@ -298,10 +307,16 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
     instruction = str(task.instruction).rstrip()
     output.mkdir(parents=True, exist_ok=True)
     mode_label = "P0" if stage == "p0" else "P1"
+    feedback_enabled = stage == "p1" and bool(cfg.get("egc", {}).get("actor_feedback_enabled", False))
+    egc_mode = ("BOUNDED_FEEDBACK_EXPERIMENTAL" if feedback_enabled else
+                "OBSERVE_ONLY" if stage == "p1" else "OFF")
+    condition_label = ("P0_CORE" if stage == "p0" else
+                       "P1_EGC_BOUNDED_FEEDBACK_EXPERIMENTAL" if feedback_enabled else
+                       "P1_EGC_OBSERVE_ONLY")
     episode_id = f"{mode_label.lower()}-task{task_id}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
     journal = SessionJournal(output, episode_id)
     if stage == "p1":
-        journal.execution_mode = "P1_ACTIVE"
+        journal.execution_mode = condition_label
         journal.raw_actor_path = journal.root / "raw_actor_events.jsonl"
     model = OpenAICompatibleModel(
         endpoint=model_cfg["endpoint"],
@@ -326,7 +341,9 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
     prompt_artifact_path.write_text(system, encoding="utf-8")
     instruction_path.write_text(instruction, encoding="utf-8")
     run_manifest = {
-        "run_id": episode_id, "status": "RUNNING", "condition": cfg["name"],
+        "run_id": episode_id, "status": "RUNNING",
+        "condition": condition_label,
+        "configured_condition": cfg["name"],
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host_pid": os.getpid(), "model": model_cfg,
         "model_revision": model_cfg["revision"], "model_endpoint_is_private_config_only": True,
@@ -354,9 +371,10 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
         "agent_budget": cfg["agent"], "environment": {**env_cfg, "task_id": task_id},
         "stage": stage.upper(), "modules": cfg.get("modules", {}),
         "egc": {"enabled": stage == "p1",
-                "execution_mode": "ACTIVE" if stage == "p1" else "OFF",
+                "execution_mode": egc_mode,
                 "module_config": cfg.get("egc", {}) if stage == "p1" else {},
-                "actor_interference_allowed": stage == "p1"},
+                "actor_interference_allowed": feedback_enabled,
+                "actor_feedback_injected": False},
         "modularcua_source_sha256": source_digest.hexdigest(),
         "instruction_artifact": str(instruction_path),
         "historical_trajectories_replayed": False,
@@ -367,7 +385,7 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
     manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
     (output / episode_id / "config.json").write_text(json.dumps({
         "resolved_config": cfg, "task_id": task_id,
-        "execution_mode": "P1_ACTIVE" if stage == "p1" else "P0",
+        "execution_mode": condition_label,
         "task_class_sha256": task_sha,
         "system_prompt_sha256": hashlib.sha256(system.encode()).hexdigest(),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -384,7 +402,7 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
     if stage == "p1":
         from modularcua.egc.runtime import EGCRuntime
         egc_config = {**cfg.get("egc", {}), "model_revision": model_cfg.get("revision"),
-                      "execution_mode": "ACTIVE"}
+                      "execution_mode": egc_mode}
         egc = EGCRuntime(output / episode_id, journal, model, egc_config)
     egc_finalized = False
     kernel = None
@@ -509,7 +527,8 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
                        output_characters=len(evaluator_text))
         status = "scored"
         summary = {
-            "episode_id": episode_id, "status": status, "condition": cfg["name"],
+            "episode_id": episode_id, "status": status, "condition": condition_label,
+            "configured_condition": cfg["name"],
             "task_id": task_id, "benchmark": "OSWorld-v2.1", "partial_score": score,
             "binary_success": bool(math.isclose(score, 1.0, rel_tol=0.0, abs_tol=1e-12)),
             "evaluator_log": str(evaluator_log_path), "evaluator_log_sha256": evaluator_sha256,
@@ -534,6 +553,8 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
         }, indent=2), encoding="utf-8")
         if egc:
             egc.finalize(summary)
+            run_manifest["egc"]["actor_feedback_injected"] = (
+                egc.metrics["actor_feedback_deliveries"] > 0)
             from modularcua.egc.audit import write_live_reports
             write_live_reports(output / episode_id, summary)
             egc_finalized = True
@@ -576,6 +597,9 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
                                model_turn_id=None, tool_call_id=None, triggering_event_id=None,
                                as_of_event_seq=journal.event_seq, status="ERROR",
                                error="Failed writing failure-time EGC projections: " + repr(audit_exc))
+            run_manifest["egc"]["actor_feedback_injected"] = (
+                egc.metrics["actor_feedback_deliveries"] > 0)
+            manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
         raise
     finally:
         if kernel:

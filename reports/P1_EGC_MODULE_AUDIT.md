@@ -94,3 +94,7 @@ Exact per-task journals: `P1/attempt1/task-*/<run-id>/module_calls.jsonl`; rejec
 5. Fix and bound history summarization below the actual context window; record auxiliary token usage and latency separately.
 
 No code was changed by this audit; the current live P0 Task061 run and frozen Qwen service were left untouched.
+
+## Source follow-up (2026-11-10; not yet validated)
+
+The historical episode findings above remain unchanged. A later source update now disables Qwen thinking for auxiliary calls, retries one truncated response with a bounded token cap, rejects requirement quotes that are not exact spans of their cited evidence, and disables the history summarizer in the checked-in observe-only config. A bounded pre-finish feedback path is available only by explicit opt-in; it requests evidence and blocks unresolved finish attempts after a configured limit, but it does not perform repairs and has not been validated against OSWorld or the frozen inference endpoint. Do not reinterpret the archived P1 runs as having used these changes.

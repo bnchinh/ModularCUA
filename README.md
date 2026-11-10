@@ -24,7 +24,7 @@ persistent IPython kernel in the OSWorld guest
 tool result and screenshot -> next model turn or finish -> official evaluator
 ```
 
-Core V0 runs without research modules. The current EGC/P1 path records auxiliary analysis and evidence, but it is observe-only: its outputs are not reliably delivered to the actor as feedback, and it does not provide a verified repair loop or an effective completion gate. See [ARCHITECTURE.md](ARCHITECTURE.md), [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md), and [the EGC audit](reports/P1_EGC_MODULE_AUDIT.md) for evidence and limitations.
+Core V0 runs without research modules. EGC/P1 is observe-only by default. An opt-in experimental pre-finish gate can request evidence and block unresolved finishes, but it has not been validated live, does not use an independent task-specific verifier, and does not execute repairs. See [ARCHITECTURE.md](ARCHITECTURE.md), [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md), and [the EGC audit](reports/P1_EGC_MODULE_AUDIT.md) for evidence and limitations.
 
 ## Repository contents
 

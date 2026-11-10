@@ -63,12 +63,53 @@ class EGCJournal:
 class EGCModelAdapter:
     """Independent text/vision calls with the frozen actor's served model and no tools."""
 
-    def __init__(self, model, *, max_tokens: int = 2048):
+    def __init__(self, model, *, max_tokens: int = 4096,
+                 max_tokens_cap: int = 8192, max_retries: int = 1):
         self.model = model
         self.max_tokens = max_tokens
+        self.max_tokens_cap = max(max_tokens, max_tokens_cap)
+        self.max_retries = max(0, max_retries)
 
     def complete(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        return self.model.complete_aux(messages, max_tokens=self.max_tokens)
+        token_limit = self.max_tokens
+        attempts: list[dict[str, Any]] = []
+        responses: list[dict[str, Any]] = []
+        for attempt_index in range(self.max_retries + 1):
+            raw = self.model.complete_aux(messages, max_tokens=token_limit,
+                                          disable_thinking=True)
+            provider = raw.get("_provider", {})
+            usage = provider.get("usage", {}) or {}
+            content = raw.get("content") or ""
+            attempts.append({
+                "attempt": attempt_index + 1,
+                "max_tokens": token_limit,
+                "finish_reason": provider.get("finish_reason"),
+                "usage": usage,
+                "latency_seconds": provider.get("latency_seconds"),
+                "content_sha256": hashlib.sha256(str(content).encode()).hexdigest(),
+            })
+            responses.append(raw)
+            truncated = provider.get("finish_reason") in {"length", "max_tokens"}
+            if not truncated or attempt_index >= self.max_retries or token_limit >= self.max_tokens_cap:
+                break
+            token_limit = min(self.max_tokens_cap, token_limit * 2)
+
+        final = responses[-1]
+        final_provider = dict(final.get("_provider", {}))
+        aggregate_usage = dict(final_provider.get("usage", {}) or {})
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"):
+            values = [int((item.get("_provider", {}).get("usage", {}) or {}).get(key, 0) or 0)
+                      for item in responses]
+            if any(values):
+                aggregate_usage[key] = sum(values)
+        final_provider["usage"] = aggregate_usage
+        final_provider["latency_seconds"] = sum(
+            float(item.get("_provider", {}).get("latency_seconds", 0) or 0)
+            for item in responses)
+        final_provider["aux_attempts"] = attempts
+        final["_provider"] = final_provider
+        final["_aux_attempts"] = attempts
+        return final
 
 
 class EGCRuntime:
@@ -86,9 +127,18 @@ class EGCRuntime:
             path.mkdir(exist_ok=True)
         self.journal = journal
         self.timeline = EGCJournal(root, journal)
-        self.model = EGCModelAdapter(model, max_tokens=int(config.get("max_aux_tokens", 2048)))
+        self.model = EGCModelAdapter(
+            model,
+            max_tokens=int(config.get("max_aux_tokens", 4096)),
+            max_tokens_cap=int(config.get("max_aux_tokens_cap", 8192)),
+            max_retries=int(config.get("max_aux_retries", 1)),
+        )
         self.config = config
-        self.execution_mode = "OBSERVE_ONLY"
+        self.actor_feedback_enabled = bool(config.get("actor_feedback_enabled", False))
+        self.max_feedback_rounds = max(0, int(config.get("max_feedback_rounds", 2)))
+        self.feedback_rounds = 0
+        self.execution_mode = ("BOUNDED_FEEDBACK_EXPERIMENTAL" if self.actor_feedback_enabled
+                               else "OBSERVE_ONLY")
         self.enabled = config.get("modules", {name: True for name in ALL_MODULES})
         self.evidence: list[dict[str, Any]] = []
         self.contract_versions: list[dict[str, Any]] = []
@@ -110,6 +160,7 @@ class EGCRuntime:
             "output_tokens": {}, "deterministic_events": {}, "module_errors": 0,
         }
         self.actor_request_hashes: list[dict[str, Any]] = []
+        self.metrics["actor_feedback_deliveries"] = 0
 
     @staticmethod
     def _sha(value: bytes) -> str:
@@ -229,6 +280,9 @@ class EGCRuntime:
             "model_name": self.model.model.model,
             "model_revision": self.config.get("model_revision"),
             "generation": {"max_tokens": self.model.max_tokens,
+                           "max_tokens_cap": self.model.max_tokens_cap,
+                           "max_retries": self.model.max_retries,
+                           "enable_thinking": False,
                            "temperature": None, "top_p": None,
                            "tools": None, "tool_choice": None},
         }
@@ -308,6 +362,10 @@ class EGCRuntime:
         schema_valid, schema_error = self._validate(module_name, parsed) if isinstance(parsed, dict) else (False, "response is not a JSON object")
         if isinstance(parsed, dict):
             grounding_valid, citation_error = self._validate_grounding(module_name, parsed, snapshot["allowed_event_ids"])
+            quote_valid, quote_errors = self._validate_source_quotes(
+                module_name, parsed, snapshot["relevant_evidence_refs"])
+            grounding_valid = grounding_valid and quote_valid
+            citation_error.extend(quote_errors)
             citation_valid = citation_valid and grounding_valid
             if citation_error:
                 unknown_citations.extend(citation_error)
@@ -407,6 +465,22 @@ class EGCRuntime:
             rows = obj.get(row_name, [])
             if any(not isinstance(row, dict) or not row_required <= row.keys() for row in rows):
                 return False, f"invalid {row_name} item shape"
+            if row_name in {"requirements", "verdicts"}:
+                row_ids = [row.get("requirement_id") for row in rows]
+                if any(not isinstance(requirement_id, str) or not requirement_id.strip()
+                       for requirement_id in row_ids):
+                    return False, f"invalid requirement_id in {row_name}"
+                if len(row_ids) != len(set(row_ids)):
+                    return False, f"duplicate requirement_id in {row_name}"
+            citation_key = ("source_event_ids" if row_name in {
+                                "requirements", "newly_discovered_constraints",
+                                "revised_requirement_definitions"}
+                            else "evidence_ids" if row_name == "verdicts" else None)
+            if citation_key and any(
+                    not isinstance(row.get(citation_key), list)
+                    or any(not isinstance(event_id, str) for event_id in row[citation_key])
+                    for row in rows):
+                return False, f"invalid {citation_key} in {row_name}"
         if module_name == "contract_updater":
             for key in ("revised_requirement_definitions",):
                 if any(not isinstance(row, dict) or not {"requirement_id", "source_quote", "source_event_ids"} <= row.keys()
@@ -454,6 +528,32 @@ class EGCRuntime:
             ids = obj.get("supporting_event_ids", [])
             if obj.get("decision") != "NO_REPAIR" and (not ids or any(x not in allow for x in ids)):
                 errors.append("UNGROUNDED_RECOVERY_PROPOSAL")
+        return not errors, errors
+
+    @staticmethod
+    def _validate_source_quotes(module_name: str, obj: dict[str, Any],
+                                evidence_refs: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+        """Require extracted contract quotes to be exact spans of cited evidence."""
+        row_keys = {
+            "requirement_contracts": ("requirements", "source_event_ids"),
+            "contract_updater": ("newly_discovered_constraints", "source_event_ids"),
+        }.get(module_name)
+        if row_keys is None:
+            return True, []
+        row_name, citation_key = row_keys
+        by_event = {str(ref.get("event_id")): str(ref.get("text", ""))
+                    for ref in evidence_refs if ref.get("event_id")}
+        errors = []
+        for index, row in enumerate(obj.get(row_name, [])):
+            if not isinstance(row, dict):
+                continue  # The schema validator reports the malformed row.
+            quote = row.get("source_quote")
+            source_ids = row.get(citation_key, [])
+            if not isinstance(quote, str) or not quote.strip() or not isinstance(source_ids, list):
+                errors.append(f"INVALID_SOURCE_QUOTE:{index}")
+                continue
+            if not any(quote in by_event.get(str(event_id), "") for event_id in source_ids):
+                errors.append(f"SOURCE_QUOTE_NOT_EXACT_SPAN:{row.get('requirement_id', index)}")
         return not errors, errors
 
     def _cost(self, module_name: str, provider: dict[str, Any]) -> None:
@@ -806,9 +906,84 @@ class EGCRuntime:
                 "current_state": self.state,
             }, image_refs=self._latest_images())
 
+    def before_finish(self, event: dict[str, Any], actor_text: str) -> dict[str, Any] | None:
+        """Optionally request bounded evidence before allowing an Actor finish."""
+        if not self.actor_feedback_enabled:
+            return None
+        claim_ref = self._record_evidence(event, text=actor_text, source_type="ACTOR_FINISH_CLAIM")
+        contract = self.contract_versions[-1] if self.contract_versions else None
+        requirements = contract.get("requirements", []) if isinstance(contract, dict) else []
+        verification = None
+        if requirements and self.enabled.get("self_verifier", True):
+            for requirement in requirements:
+                requirement_id = str(requirement.get("requirement_id", "UNKNOWN"))
+                self.requirement_status[requirement_id] = "UNKNOWN"
+            evidence_refs = [*self._refs_for_contracts(), *self._refs_for_state(),
+                             *self._recent_evidence_refs(), claim_ref]
+            verification = self.infer("self_verifier", event, {
+                "trigger_reason": "pre_finish_bounded_gate",
+                "snapshot_event_id": event["event_id"],
+                "task_instruction": self.evidence[0]["text"] if self.evidence else "",
+                "requirements": contract, "evidence_refs": evidence_refs,
+                "current_state": self.state, "actor_final_claim": actor_text,
+            }, image_refs=self._latest_images())
+
+        unresolved = []
+        if not requirements:
+            unresolved.append({"requirement_id": "REQUIREMENT_CONTRACT",
+                               "status": "UNKNOWN"})
+        else:
+            for requirement in requirements:
+                requirement_id = str(requirement.get("requirement_id", "UNKNOWN"))
+                status = self.requirement_status.get(requirement_id, "UNKNOWN")
+                if status != "PASS":
+                    unresolved.append({"requirement_id": requirement_id, "status": status})
+        if not unresolved:
+            self.timeline.emit("egc_termination_decision", module_name="termination",
+                               module_call_id=str(uuid.uuid4()), model_turn_id=self.current_turn,
+                               tool_call_id=None, triggering_event_id=event.get("event_id"),
+                               status="MODEL_VERIFIER_PASS", decision="ALLOW_FINISH",
+                               intervention_allowed=True, intervention_delivered=False,
+                               verifier_validation_event_id=(verification or {}).get("validation_event_id"),
+                               unresolved_requirement_ids=[])
+            return None
+
+        decision = ("REQUEST_EVIDENCE" if self.feedback_rounds < self.max_feedback_rounds
+                    else "BLOCK_FINISH")
+        if decision == "REQUEST_EVIDENCE":
+            self.feedback_rounds += 1
+            rows = ", ".join(f"{item['requirement_id']}={item['status']}" for item in unresolved)
+            message = ("EGC pre-finish check is unresolved: " + rows + ". Obtain fresh, relevant UI or "
+                       "artifact evidence. Address any FAIL result and gather evidence for UNKNOWN results; "
+                       "then reassess the task. Do not claim a requirement is complete without evidence.")
+            feedback_event = self.timeline.emit(
+                "egc_actor_feedback_delivered", module_name="termination",
+                module_call_id=str(uuid.uuid4()), model_turn_id=self.current_turn,
+                tool_call_id=None, triggering_event_id=event.get("event_id"),
+                status="DELIVERED", decision=decision,
+                intervention_allowed=True, intervention_delivered=True,
+                feedback_round=self.feedback_rounds, unresolved_requirements=unresolved,
+                verifier_validation_event_id=(verification or {}).get("validation_event_id"),
+                message=message,
+            )
+            self.metrics["actor_feedback_deliveries"] += 1
+            return {"action": "FEEDBACK", "message": message,
+                    "event_id": feedback_event["event_id"]}
+
+        self.timeline.emit("egc_termination_decision", module_name="termination",
+                           module_call_id=str(uuid.uuid4()), model_turn_id=self.current_turn,
+                           tool_call_id=None, triggering_event_id=event.get("event_id"),
+                           status="BLOCKED_UNVERIFIED", decision=decision,
+                           intervention_allowed=True, intervention_delivered=False,
+                           feedback_rounds=self.feedback_rounds,
+                           unresolved_requirements=unresolved,
+                           verifier_validation_event_id=(verification or {}).get("validation_event_id"))
+        return {"action": "BLOCK", "unresolved_requirements": unresolved}
+
     def finish(self, event: dict[str, Any], actor_text: str) -> None:
         ref = self._record_evidence(event, text=actor_text, source_type="ACTOR_FINISH_CLAIM")
-        if self.contract_versions and self.enabled.get("self_verifier", True):
+        if (not self.actor_feedback_enabled and self.contract_versions
+                and self.enabled.get("self_verifier", True)):
             self.infer("self_verifier", event, {
                 "trigger_reason": "actor_finish_request", "snapshot_event_id": event["event_id"],
                 "task_instruction": self.evidence[0]["text"], "requirements": self.contract_versions[-1],
@@ -822,8 +997,11 @@ class EGCRuntime:
             event_out = self.timeline.emit(
                 "egc_termination_decision", module_name="termination", module_call_id=str(uuid.uuid4()),
                 model_turn_id=self.current_turn, tool_call_id=None,
-                triggering_event_id=event["event_id"], status="ADVISORY_ONLY",
-                decision=decision, intervention_allowed=False, intervention_delivered=False,
+                triggering_event_id=event["event_id"],
+                status=("MODEL_VERIFIER_PASS" if self.actor_feedback_enabled and not unresolved
+                        else "ADVISORY_ONLY"),
+                decision=decision, intervention_allowed=self.actor_feedback_enabled,
+                intervention_delivered=False,
                 unresolved_requirement_ids=[r.get("requirement_id") for r in unresolved],
                 unknown_requirement_count=len(unresolved), actor_finish_event_id=event["event_id"],
             )
@@ -908,12 +1086,15 @@ class EGCRuntime:
             "requirement_status": self.requirement_status,
             "actor_claims_are_not_verification": True,
             "limitations": ["No benchmark evaluator data entered EGC prompts.",
-                            "Observe-only outputs were never injected into the Actor."],
+                            ("Bounded feedback was enabled experimentally; it does not execute repairs."
+                             if self.actor_feedback_enabled else
+                             "Observe-only outputs were never injected into the Actor.")],
         })
         self._write_projection("provenance_graph.json", self.provenance)
         self._write_projection("module_runtime_metrics.json", {
             **self.metrics, "execution_mode": self.execution_mode,
-            "actor_summary": actor_summary, "egc_advisories_delivered": 0,
+            "actor_summary": actor_summary,
+            "egc_advisories_delivered": self.metrics["actor_feedback_deliveries"],
             "egc_repair_actions_executed": 0,
             "actor_request_hashes": self.actor_request_hashes,
         })
@@ -921,7 +1102,8 @@ class EGCRuntime:
                             model_turn_id=self.current_turn, tool_call_id=None,
                             triggering_event_id=None, as_of_event_seq=self.journal.event_seq,
                             status="COMPLETED", execution_mode=self.execution_mode,
-                            metrics=self.metrics, actor_feedback_injected=False)
+                            metrics=self.metrics,
+                            actor_feedback_injected=self.metrics["actor_feedback_deliveries"] > 0)
 
     @staticmethod
     def _has_factual_content(module_name: str, parsed: dict[str, Any]) -> bool:
