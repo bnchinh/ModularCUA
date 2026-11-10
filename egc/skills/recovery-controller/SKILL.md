@@ -1,3 +1,10 @@
+---
+name: recovery-controller
+description: Diagnose supported computer-use execution failures and propose a bounded, evidence-grounded recovery step. Use after repeated no-effect actions or a verifier-supported failure.
+metadata:
+  modularcua.kind: egc-module
+---
+
 # Recovery Controller module
 
 - Purpose: diagnose supported execution failures and propose a bounded minimal repair.

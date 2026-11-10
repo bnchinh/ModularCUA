@@ -24,7 +24,7 @@ persistent IPython kernel in the OSWorld guest
 tool result and screenshot -> next model turn or finish -> official evaluator
 ```
 
-Core V0 runs without research modules. EGC/P1 is observe-only by default. An opt-in experimental pre-finish gate can request evidence and block unresolved finishes, but it has not been validated live, does not use an independent task-specific verifier, and does not execute repairs. See [ARCHITECTURE.md](ARCHITECTURE.md), [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md), and [the EGC audit](reports/P1_EGC_MODULE_AUDIT.md) for evidence and limitations.
+Core V0 runs without research modules. EGC/P1 is observe-only by default. Actor-facing Agent Skills integration and EGC prompt bindings are opt-in experiments; neither has benchmark results yet. Skills use progressive disclosure: catalog descriptions enter the initial prompt, the agent activates relevant instructions on demand, and text resources can be read from `references/` or `assets/`. Skill metadata does not grant permissions, and the skill runtime never auto-runs packaged scripts. The separate guest IPython capability can access the guest user's files and commands, so this feature is not a sandbox. See [the SKILL.md integration evaluation plan](reports/SKILL_MD_INTEGRATION_EVALUATION.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
 ## Repository contents
 
@@ -85,11 +85,13 @@ python ModularCUA/src/modularcua/environments/osworld_v2/runner.py \
 
 An EGC observation-only run uses `--config ModularCUA/configs/egc_observe_only.yaml --task-id 001 --stage p1`. Do not interpret that condition as active verification or recovery; review the audit before drawing conclusions.
 
+To opt into Actor-facing skill discovery, use `ModularCUA/configs/skills_experiment.yaml` with `--stage p0`. To bind the bundled EGC module SKILL.md instructions to their corresponding module prompts, use `ModularCUA/configs/egc_skillmd_experiment.yaml --stage p1`. These conditions have distinct labels in run manifests. After collecting runs, summarize activation and outcomes with `python ModularCUA/scripts/evaluate_skill_runs.py <runs-root> --output skill-evaluation.md`.
+
 ## Evaluation and diagnostics
 
 A run counts as officially measured only when `official_result.json` reports `status=MEASURED` and includes both `partial_score` and `binary_success`. Infrastructure failures, interruptions, and missing evaluator records are not score-zero results. Model claims, screenshots, and verifier output do not replace the official evaluator.
 
-Run the local tests from the OSWorld-v2.1 repository root:
+Local tests can be run from the OSWorld-v2.1 repository root:
 
 ```bash
 PYTHONPATH="ModularCUA/src:$PWD" \

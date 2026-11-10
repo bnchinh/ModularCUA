@@ -1,0 +1,13 @@
+name: modularcua-skills-experiment-v1
+extends: core_v0.yaml
+skills:
+  enabled: true
+  directories:
+    - ModularCUA/skills
+  available_tools:
+    - ipython
+  max_active: 4
+  max_skill_chars: 30000
+  max_resource_chars: 20000
+  max_total_skill_chars: 60000
+  max_total_resource_chars: 40000

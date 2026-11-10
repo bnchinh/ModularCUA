@@ -1,3 +1,10 @@
+---
+name: history-summary
+description: Preserve task-relevant execution history, outcomes, failures, and unresolved facts when context is compacted. Use when an agent needs to summarize a long computer-use session without treating claims as verified results.
+metadata:
+  modularcua.kind: egc-module
+---
+
 # History Summary module
 
 - Purpose: summarize prior history only at an actual runtime compaction boundary.

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from modularcua.host.model import image_data_url
+from modularcua.host.skills import SkillCatalog
 
 
 MODULES = {
@@ -22,6 +23,14 @@ MODULES = {
     "history_summarizer": "history_summarizer.md",
 }
 ALL_MODULES = (*MODULES.keys(), "structured_state", "provenance_tracker", "termination")
+EGC_SKILL_BY_MODULE = {
+    "requirement_contracts": "requirement-contracts",
+    "contract_updater": "requirement-contracts",
+    "visual_state_interpreter": "structured-state",
+    "self_verifier": "self-verifier",
+    "recovery_planner": "recovery-controller",
+    "history_summarizer": "history-summary",
+}
 
 
 class EGCJournal:
@@ -140,6 +149,11 @@ class EGCRuntime:
         self.execution_mode = ("BOUNDED_FEEDBACK_EXPERIMENTAL" if self.actor_feedback_enabled
                                else "OBSERVE_ONLY")
         self.enabled = config.get("modules", {name: True for name in ALL_MODULES})
+        self.skill_catalog = None
+        if bool(config.get("skill_md_enabled", False)):
+            skill_root = Path(__file__).resolve().parents[3] / "egc" / "skills"
+            self.skill_catalog = SkillCatalog([skill_root])
+        self.skill_instruction_bindings: list[dict[str, Any]] = []
         self.evidence: list[dict[str, Any]] = []
         self.contract_versions: list[dict[str, Any]] = []
         self.state: dict[str, dict[str, Any]] = {}
@@ -240,6 +254,14 @@ class EGCRuntime:
                               image_refs: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         prompt_source = Path(__file__).resolve().parents[3] / "egc" / "prompts" / MODULES[module_name]
         prompt = prompt_source.read_text(encoding="utf-8")
+        skill = None
+        skill_name = EGC_SKILL_BY_MODULE.get(module_name)
+        if self.skill_catalog and skill_name:
+            skill = self.skill_catalog.get(skill_name)
+            prompt += ("\n\n## Bound SKILL.md instructions: " + skill.name + "\n\n"
+                       + skill.body
+                       + "\n\nThese skill instructions supplement this module prompt. "
+                         "They do not override the task evidence boundary or module schema.")
         prompt_path = self.prompts_dir / MODULES[module_name]
         if not prompt_path.exists():
             prompt_path.write_text(prompt, encoding="utf-8")
@@ -260,6 +282,12 @@ class EGCRuntime:
         payload_bytes = json.dumps(messages, ensure_ascii=False, separators=(",", ":")).encode()
         payload_sha = self._sha(payload_bytes)
         module_call_id = str(uuid.uuid4())
+        if skill:
+            self.skill_instruction_bindings.append({
+                "module_name": module_name, "skill_name": skill.name,
+                "skill_sha256": skill.sha256, "module_call_id": module_call_id,
+                "prompt_sha256": prompt_sha,
+            })
         input_file = self.inputs_dir / f"{module_call_id}.json"
         input_file.write_bytes(payload_bytes)
         os.chmod(input_file, 0o600)
@@ -276,6 +304,7 @@ class EGCRuntime:
             "model_visible_messages": messages,
             "image_attachments": image_artifacts,
             "prompt_version": prompt_path.name, "prompt_sha256": prompt_sha,
+            "skill": (skill.public_record() if skill else None),
             "input_payload_sha256": payload_sha,
             "model_name": self.model.model.model,
             "model_revision": self.config.get("model_revision"),
@@ -304,6 +333,7 @@ class EGCRuntime:
             return None
         call_id, messages, snapshot = self._message_and_snapshot(
             module_name, trigger, user_payload, image_refs or [])
+        skill_record = snapshot.get("skill") or {}
         trigger_event = self.timeline.emit(
             "egc_module_triggered", module_name=module_name, module_call_id=call_id,
             model_turn_id=trigger.get("model_turn_id", self.current_turn),
@@ -330,6 +360,8 @@ class EGCRuntime:
             status="DISPATCHED", as_of_event_seq=snapshot["evidence_cutoff_sequence"],
             request_event_id=input_event["event_id"], model_name=snapshot["model_name"],
             generation=snapshot["generation"], prompt_sha256=snapshot["prompt_sha256"],
+            skill_name=skill_record.get("name"),
+            skill_sha256=skill_record.get("sha256"),
             input_payload_sha256=snapshot["input_payload_sha256"],
         )
         started = time.monotonic()
@@ -1096,6 +1128,7 @@ class EGCRuntime:
             "actor_summary": actor_summary,
             "egc_advisories_delivered": self.metrics["actor_feedback_deliveries"],
             "egc_repair_actions_executed": 0,
+            "skill_instruction_bindings": self.skill_instruction_bindings,
             "actor_request_hashes": self.actor_request_hashes,
         })
         self.journal.append("egc_run_finalized", module_name="runtime", module_call_id=None,
@@ -1103,6 +1136,7 @@ class EGCRuntime:
                             triggering_event_id=None, as_of_event_seq=self.journal.event_seq,
                             status="COMPLETED", execution_mode=self.execution_mode,
                             metrics=self.metrics,
+                            skill_instruction_bindings=self.skill_instruction_bindings,
                             actor_feedback_injected=self.metrics["actor_feedback_deliveries"] > 0)
 
     @staticmethod

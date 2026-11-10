@@ -21,11 +21,15 @@ The five P1 episodes also have official evaluator results: mean partial score 36
 | Pre-finish Actor feedback | Experimental opt-in, disabled by default and not validated | Bounded evidence requests can be delivered and unresolved finishes are blocked after the configured limit. No automatic repair is executed. |
 | EGC response handling | Remediation implemented, not yet re-evaluated | Auxiliary Qwen calls now request non-thinking output and retry once on output truncation with a bounded token cap. This has not yet been validated against the frozen serving endpoint. |
 | EGC context summarizer | Disabled by default | Historical P1 calls exceeded the model context limit. A bounded, token-aware implementation is still needed before re-enabling it. |
+| Actor-facing Agent Skills runtime | Implemented as an opt-in experiment; not benchmarked | `src/modularcua/host/skills.py`; catalog-only descriptions, explicit activation, bounded resource reads, host tool availability checks, and run-level hashes/metrics. See `reports/SKILL_MD_INTEGRATION_EVALUATION.md`. |
+| EGC SKILL.md prompt binding | Implemented as an opt-in experiment; not benchmarked | Static module-to-skill mapping in `src/modularcua/egc/runtime.py`; records skill and prompt hashes per module call. |
 | Task-specific verification and repair | Not implemented end to end | Current file metadata and format checks do not establish semantic task correctness; no bounded Actor repair loop is wired. |
 | Security isolation | Not a sandbox | Model-generated Python runs with the guest user's permissions. |
 
 ## Changes made in the current source update
 
+- Added opt-in Agent Skills discovery, progressive loading, resource reads, tool requirement checks, provenance events, and an evaluation report script. Bundled EGC skill folders now use spec-shaped slugs and frontmatter.
+- Added separate Actor-skill and EGC-SKILL.md experiment configs and condition labels. Both features remain disabled in default configs and have not been benchmarked.
 - P1 run metadata now distinguishes `P1_EGC_OBSERVE_ONLY` from the opt-in `P1_EGC_BOUNDED_FEEDBACK_EXPERIMENTAL` condition and records actual Actor feedback delivery.
 - Auxiliary EGC inference disables Qwen thinking mode, retries once when the provider reports output truncation, and records attempt budgets and usage.
 - Requirement source quotes must match an exact span of cited evidence. The experimental pre-finish path can request evidence and fail closed, but it is disabled by default and does not perform repairs.
@@ -35,7 +39,8 @@ These changes have not been run against OSWorld or the frozen inference endpoint
 
 ## Next work
 
-1. Replay the archived contract requests through the updated production adapter and validator. Confirm valid JSON, schema acceptance, exact source-span grounding, latency, and total token use for all five tasks.
-2. Implement an independently grounded, task-specific verifier and connect its result to the experimental feedback path. Preserve `UNKNOWN` when evidence is missing; add a bounded, targeted repair loop only after verification is trustworthy.
-3. Run a single-task end-to-end pilot and require a valid contract, a verified PASS/FAIL/UNKNOWN result, and a delivered feedback event before calling the condition active EGC.
-4. After the mechanism gate passes, run a pre-specified multi-run comparison with frozen source/config/model, isolated inference capacity, and per-task cost and outcome reporting.
+1. Run a small SKILL.md integration pilot, confirm skill activation/resource provenance, and compare matched skill-off/on outcomes using `reports/SKILL_MD_INTEGRATION_EVALUATION.md`.
+2. Replay archived EGC contract requests through the updated adapter and validator. Confirm valid JSON, schema acceptance, exact source-span grounding, latency, and token use for all five tasks.
+3. Implement an independently grounded, task-specific verifier and connect it to the experimental feedback path. Preserve `UNKNOWN` when evidence is missing; add a bounded, targeted repair loop only after verification is trustworthy.
+4. After the mechanism gate passes, run a pre-specified multi-run EGC comparison with frozen source/config/model and per-task cost and outcome reporting.
+5. Follow the later production-hardening backlog in `reports/SKILL_MD_INTEGRATION_EVALUATION.md` after the skill integration is measured.

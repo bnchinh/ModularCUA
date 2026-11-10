@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import base64
 import io
@@ -14,6 +15,7 @@ from modularcua.host.budget import BudgetController
 from modularcua.host.journal import SessionJournal
 from modularcua.host.modules import EventBus
 from modularcua.host.prompt import IPYTHON_TOOL, initial_messages
+from modularcua.host.skills import SKILL_TOOLS, SkillRuntime
 from modularcua.types import ToolResult
 
 
@@ -29,6 +31,7 @@ class AgentLoop:
                  after_tool_observer: Callable[[int, str], Any] | None = None,
                  artifact_probe: Callable[[str], dict[str, Any]] | None = None,
                  egc=None,
+                 skills: SkillRuntime | None = None,
                  max_wall_seconds: float = 5400,
                  max_tool_output_chars: int = 30000):
         self.model, self.kernel, self.journal = model, kernel, journal
@@ -37,6 +40,9 @@ class AgentLoop:
         self.after_tool_observer = after_tool_observer
         self.artifact_probe = artifact_probe
         self.egc = egc
+        self.skills = skills
+        self.tools = [IPYTHON_TOOL, *SKILL_TOOLS] if skills else [IPYTHON_TOOL]
+        self.skill_tool_calls = 0
         self.max_tool_output_chars = max_tool_output_chars
         self.budget = BudgetController(max_steps, max_wall_seconds)
         self.model_turns = 0
@@ -69,24 +75,26 @@ class AgentLoop:
                 self.journal.append("budget_exhausted", model_turn_id=turn-1, reason=stop_reason)
                 return {"status": stop_reason, "turns": turn-1, "tool_calls": self.tool_calls,
                         "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
+                        "skill_tool_calls": self.skill_tool_calls,
+                        "active_skills": sorted(self.skills.active) if self.skills else [],
                         "messages": messages,
                         "pyautogui_action_attempts": self.pyautogui_action_attempts,
                         "pyautogui_actions_executed": self.pyautogui_actions_executed}
             self.model_turns = turn
             self.modules.dispatch("before_model_call", {"turn": turn, "messages": messages})
             request_event = self.journal.append("model_request", model_turn_id=turn, messages=messages,
-                                                tools=[IPYTHON_TOOL], model=getattr(self.model, "model", None),
+                                                tools=self.tools, model=getattr(self.model, "model", None),
                                                 generation={"max_tokens": getattr(self.model, "max_tokens", None),
                                                             "temperature": getattr(self.model, "temperature", None),
                                                             "top_p": getattr(self.model, "top_p", None)})
             if self.egc:
                 self.egc.current_turn = turn
-                self.egc.actor_model_request(request_event, messages, [IPYTHON_TOOL])
+                self.egc.actor_model_request(request_event, messages, self.tools)
             started = time.monotonic()
             raw = None
             for attempt in range(2):
                 try:
-                    raw = self.model.complete(messages, [IPYTHON_TOOL])
+                    raw = self.model.complete(messages, self.tools)
                     break
                 except Exception as exc:
                     self.journal.append("model_error", model_turn_id=turn, attempt=attempt+1,
@@ -94,6 +102,8 @@ class AgentLoop:
                     if attempt == 1:
                         return {"status": "model_error", "error": repr(exc), "turns": turn-1,
                                 "tool_calls": self.tool_calls, "input_tokens": self.input_tokens,
+                                "skill_tool_calls": self.skill_tool_calls,
+                                "active_skills": sorted(self.skills.active) if self.skills else [],
                                 "output_tokens": self.output_tokens, "messages": messages,
                                 "pyautogui_action_attempts": self.pyautogui_action_attempts,
                                 "pyautogui_actions_executed": self.pyautogui_actions_executed}
@@ -125,6 +135,8 @@ class AgentLoop:
                             "turn": turn, "status": "verification_inconclusive"})
                         return {"status": "verification_inconclusive", "turns": turn,
                                 "tool_calls": self.tool_calls, "input_tokens": self.input_tokens,
+                                "skill_tool_calls": self.skill_tool_calls,
+                                "active_skills": sorted(self.skills.active) if self.skills else [],
                                 "output_tokens": self.output_tokens, "messages": messages,
                                 "blocked_event_id": blocked_event["event_id"],
                                 "pyautogui_action_attempts": self.pyautogui_action_attempts,
@@ -141,6 +153,8 @@ class AgentLoop:
                 self.modules.dispatch("task_end", {"turn": turn, "status": "finished"})
                 return {"status": "finished", "answer": text, "turns": turn,
                         "tool_calls": self.tool_calls, "input_tokens": self.input_tokens,
+                        "skill_tool_calls": self.skill_tool_calls,
+                        "active_skills": sorted(self.skills.active) if self.skills else [],
                         "output_tokens": self.output_tokens, "messages": messages,
                         "pyautogui_action_attempts": self.pyautogui_action_attempts,
                         "pyautogui_actions_executed": self.pyautogui_actions_executed}
@@ -164,7 +178,81 @@ class AgentLoop:
                     self.journal.append("tool_call_rejected", model_turn_id=turn,
                                         tool_call_id=call_id, raw_arguments=fn.get("arguments"),
                                         reason=error)
-                elif fn.get("name") != "ipython" or not isinstance(args.get("code"), str):
+                elif self.skills and fn.get("name") == "activate_skill":
+                    self.modules.dispatch("before_tool_call", {"model_turn_id": turn,
+                                                                 "tool_call_id": call_id,
+                                                                 "name": fn["name"], "arguments": args})
+                    self.skill_tool_calls += 1
+                    started = time.monotonic()
+                    try:
+                        if not isinstance(args, dict) or not isinstance(args.get("name"), str):
+                            raise ValueError("name must be a string")
+                        skill, content, newly_loaded = self.skills.activate(args["name"])
+                        event_type = "skill_activated" if newly_loaded else "skill_activation_reused"
+                        skill_event = self.journal.append(
+                            event_type, model_turn_id=turn, tool_call_id=call_id,
+                            skill_name=skill.name, skill_sha256=skill.sha256,
+                            skill_path=str(skill.skill_file), instructions_loaded=newly_loaded,
+                            instruction_characters=len(skill.body) if newly_loaded else 0,
+                            requested_allowed_tools=list(skill.allowed_tools),
+                            granted_required_tools=list(skill.required_tools),
+                        )
+                        is_error = False
+                    except Exception as exc:
+                        content = "Skill activation rejected: " + str(exc)
+                        skill_event = self.journal.append(
+                            "skill_activation_rejected", model_turn_id=turn,
+                            tool_call_id=call_id,
+                            skill_name=args.get("name") if isinstance(args, dict) else None,
+                            reason=repr(exc),
+                        )
+                        is_error = True
+                    out = ToolResult(call_id, content, is_error=is_error,
+                                     duration_seconds=time.monotonic() - started)
+                    self.modules.dispatch("after_tool_call", {
+                        "model_turn_id": turn, "tool_call_id": call_id,
+                        "result": str(content), "is_error": is_error,
+                        "skill_event_id": skill_event["event_id"],
+                    })
+                elif self.skills and fn.get("name") == "read_skill_resource":
+                    self.modules.dispatch("before_tool_call", {"model_turn_id": turn,
+                                                                 "tool_call_id": call_id,
+                                                                 "name": fn["name"], "arguments": args})
+                    self.skill_tool_calls += 1
+                    started = time.monotonic()
+                    try:
+                        if (not isinstance(args, dict) or not isinstance(args.get("skill_name"), str)
+                                or not isinstance(args.get("path"), str)):
+                            raise ValueError("skill_name and path must be strings")
+                        skill, resource_path, content = self.skills.read_resource(
+                            args["skill_name"], args["path"])
+                        skill_event = self.journal.append(
+                            "skill_resource_read", model_turn_id=turn, tool_call_id=call_id,
+                            skill_name=skill.name, skill_sha256=skill.sha256,
+                            resource_path=resource_path,
+                            resource_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                            resource_characters=len(content),
+                        )
+                        out_content = content
+                        is_error = False
+                    except Exception as exc:
+                        out_content = "Skill resource request rejected: " + str(exc)
+                        skill_event = self.journal.append(
+                            "skill_resource_rejected", model_turn_id=turn,
+                            tool_call_id=call_id,
+                            skill_name=args.get("skill_name") if isinstance(args, dict) else None,
+                            path=args.get("path") if isinstance(args, dict) else None,
+                            reason=repr(exc),
+                        )
+                        is_error = True
+                    out = ToolResult(call_id, out_content, is_error=is_error,
+                                     duration_seconds=time.monotonic() - started)
+                    self.modules.dispatch("after_tool_call", {
+                        "model_turn_id": turn, "tool_call_id": call_id,
+                        "result": str(out_content), "is_error": is_error,
+                        "skill_event_id": skill_event["event_id"],
+                    })
+                elif fn.get("name") != "ipython" or not isinstance(args, dict) or not isinstance(args.get("code"), str):
                     out = ToolResult(call_id, f"unsupported tool call: {fn.get('name')}", is_error=True)
                     artifacts = []
                     self.journal.append("tool_call_rejected", model_turn_id=turn,
@@ -258,6 +346,8 @@ class AgentLoop:
         return {"status": "budget_exhausted", "turns": self.model_turns,
                 "tool_calls": self.tool_calls, "input_tokens": self.input_tokens,
                 "output_tokens": self.output_tokens, "messages": messages,
+                "skill_tool_calls": self.skill_tool_calls,
+                "active_skills": sorted(self.skills.active) if self.skills else [],
                 "pyautogui_action_attempts": self.pyautogui_action_attempts,
                 "pyautogui_actions_executed": self.pyautogui_actions_executed}
 

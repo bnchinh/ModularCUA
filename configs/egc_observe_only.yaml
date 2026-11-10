@@ -3,6 +3,7 @@ extends: core_v0.yaml
 environment:
   task_id: "001"
 egc:
+  skill_md_enabled: false
   actor_feedback_enabled: false
   max_feedback_rounds: 2
   max_aux_tokens: 4096

@@ -1,0 +1,4 @@
+name: modularcua-egc-skillmd-experiment-v1
+extends: egc_observe_only.yaml
+egc:
+  skill_md_enabled: true

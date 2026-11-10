@@ -1,3 +1,10 @@
+---
+name: requirement-contracts
+description: Extract source-grounded requirements and preserve unknowns without solving the task. Use at task start or when new source evidence changes task constraints.
+metadata:
+  modularcua.kind: egc-module
+---
+
 # Requirement Contracts module
 
 - Purpose: extract source-grounded, versioned requirements without solving the task.

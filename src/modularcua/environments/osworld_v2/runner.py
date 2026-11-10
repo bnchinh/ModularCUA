@@ -21,6 +21,8 @@ from modularcua.host.journal import SessionJournal
 from modularcua.host.kernel import GuestIPythonKernel
 from modularcua.host.model import OpenAICompatibleModel
 from modularcua.host.modules import EventBus
+from modularcua.host.prompt import IPYTHON_TOOL
+from modularcua.host.skills import SKILL_SYSTEM_ADDENDUM, SkillCatalog, SkillRuntime
 from task_loader import load_task_config
 
 
@@ -268,6 +270,13 @@ def _record_interruption(journal: SessionJournal, manifest_path: Path,
         })
     run_manifest["partial_counts"] = partial
     run_manifest["interruption_event_id"] = event["event_id"]
+    skill_runtime = getattr(agent, "skills", None)
+    if skill_runtime:
+        run_manifest["skills"] = skill_runtime.manifest()
+    egc_runtime = getattr(agent, "egc", None)
+    if egc_runtime and isinstance(run_manifest.get("egc"), dict):
+        run_manifest["egc"]["skill_instruction_bindings"] = list(
+            egc_runtime.skill_instruction_bindings)
     module_calls_path = manifest_path.parent / "module_calls.jsonl"
     if module_calls_path.is_file() and isinstance(run_manifest.get("egc"), dict):
         try:
@@ -304,15 +313,47 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
     task = load_task_config(None, task_id=task_id, base_dir=str(repo_root/"evaluation_examples"), eval_version="v2")
     prompt_source_path = (repo_root / cfg.get("system_prompt", "ModularCUA/prompts/osworld_ipython_system.md")).resolve()
     system = prompt_source_path.read_text(encoding="utf-8").rstrip()
+    skill_cfg = cfg.get("skills", {})
+    skill_runtime = None
+    if bool(skill_cfg.get("enabled", False)):
+        skill_roots = []
+        for configured_path in skill_cfg.get("directories", ["ModularCUA/skills"]):
+            root = (repo_root / str(configured_path)).resolve()
+            if not root.is_relative_to(repo_root):
+                raise ValueError(f"skill directory must be inside the OSWorld checkout: {configured_path}")
+            skill_roots.append(root)
+        skill_catalog = SkillCatalog(
+            skill_roots,
+            max_skill_chars=int(skill_cfg.get("max_skill_chars", 30000)),
+            max_resource_chars=int(skill_cfg.get("max_resource_chars", 20000)),
+        )
+        actual_tool_names = {IPYTHON_TOOL["function"]["name"]}
+        configured_tool_names = set(skill_cfg.get("available_tools", actual_tool_names))
+        unknown_tools = configured_tool_names - actual_tool_names
+        if unknown_tools:
+            raise ValueError("skills config declares unavailable tools: " + ", ".join(sorted(unknown_tools)))
+        skill_runtime = SkillRuntime(
+            skill_catalog, max_active=int(skill_cfg.get("max_active", 4)),
+            max_total_skill_chars=int(skill_cfg.get("max_total_skill_chars", 60000)),
+            max_total_resource_chars=int(skill_cfg.get("max_total_resource_chars", 40000)),
+            available_tools=actual_tool_names,
+        )
+        system += "\n\n" + SKILL_SYSTEM_ADDENDUM + "\n\n" + skill_catalog.catalog_text()
     instruction = str(task.instruction).rstrip()
     output.mkdir(parents=True, exist_ok=True)
     mode_label = "P0" if stage == "p0" else "P1"
     feedback_enabled = stage == "p1" and bool(cfg.get("egc", {}).get("actor_feedback_enabled", False))
+    actor_skills_enabled = bool(cfg.get("skills", {}).get("enabled", False))
+    egc_skill_md_enabled = stage == "p1" and bool(cfg.get("egc", {}).get("skill_md_enabled", False))
     egc_mode = ("BOUNDED_FEEDBACK_EXPERIMENTAL" if feedback_enabled else
                 "OBSERVE_ONLY" if stage == "p1" else "OFF")
     condition_label = ("P0_CORE" if stage == "p0" else
                        "P1_EGC_BOUNDED_FEEDBACK_EXPERIMENTAL" if feedback_enabled else
                        "P1_EGC_OBSERVE_ONLY")
+    if actor_skills_enabled:
+        condition_label += "_ACTOR_SKILLS"
+    if egc_skill_md_enabled:
+        condition_label += "_EGC_SKILLMD"
     episode_id = f"{mode_label.lower()}-task{task_id}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
     journal = SessionJournal(output, episode_id)
     if stage == "p1":
@@ -373,8 +414,10 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
         "egc": {"enabled": stage == "p1",
                 "execution_mode": egc_mode,
                 "module_config": cfg.get("egc", {}) if stage == "p1" else {},
+                "skill_md_enabled": egc_skill_md_enabled,
                 "actor_interference_allowed": feedback_enabled,
                 "actor_feedback_injected": False},
+        "skills": (skill_runtime.manifest() if skill_runtime else {"enabled": False}),
         "modularcua_source_sha256": source_digest.hexdigest(),
         "instruction_artifact": str(instruction_path),
         "historical_trajectories_replayed": False,
@@ -404,6 +447,11 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
         egc_config = {**cfg.get("egc", {}), "model_revision": model_cfg.get("revision"),
                       "execution_mode": egc_mode}
         egc = EGCRuntime(output / episode_id, journal, model, egc_config)
+        if egc.skill_catalog:
+            run_manifest["egc"]["skill_catalog"] = {
+                "discovered": [skill.public_record() for skill in egc.skill_catalog.skills.values()],
+                "invalid": list(egc.skill_catalog.invalid),
+            }
     egc_finalized = False
     kernel = None
     agent = None
@@ -491,6 +539,7 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
             after_tool_observer=capture_after_tool,
             artifact_probe=(lambda code: _filesystem_probe_if_relevant(env.controller, code)) if stage == "p1" else None,
             egc=egc,
+            skills=skill_runtime,
             max_wall_seconds=cfg["environment"]["timeout_seconds"],
             max_tool_output_chars=cfg["agent"]["max_tool_output_chars"],
         )
@@ -553,11 +602,15 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
         }, indent=2), encoding="utf-8")
         if egc:
             egc.finalize(summary)
+            run_manifest["egc"]["skill_instruction_bindings"] = list(
+                egc.skill_instruction_bindings)
             run_manifest["egc"]["actor_feedback_injected"] = (
                 egc.metrics["actor_feedback_deliveries"] > 0)
             from modularcua.egc.audit import write_live_reports
             write_live_reports(output / episode_id, summary)
             egc_finalized = True
+        run_manifest["skills"] = (skill_runtime.manifest() if skill_runtime
+                                   else {"enabled": False})
         run_manifest.update({"status": "COMPLETED_SCORED", "finished_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                              "official_partial_score": score, "official_binary_success": summary["binary_success"],
                              "evaluator_log": str(evaluator_log_path), "evaluator_log_sha256": evaluator_sha256,
@@ -582,6 +635,8 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
         }, indent=2), encoding="utf-8")
         run_manifest.update({"status": "INFRASTRUCTURE_ERROR", "error": repr(exc),
                              "finished_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+        run_manifest["skills"] = (skill_runtime.manifest() if skill_runtime
+                                   else {"enabled": False})
         manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
         if egc and not egc_finalized:
             not_measured = {"status": "NOT_MEASURED", "task_id": task_id,
@@ -599,6 +654,8 @@ def run_task(config_path: Path, output: Path, task_id: str = "001", stage: str =
                                error="Failed writing failure-time EGC projections: " + repr(audit_exc))
             run_manifest["egc"]["actor_feedback_injected"] = (
                 egc.metrics["actor_feedback_deliveries"] > 0)
+            run_manifest["egc"]["skill_instruction_bindings"] = list(
+                egc.skill_instruction_bindings)
             manifest_path.write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
         raise
     finally:

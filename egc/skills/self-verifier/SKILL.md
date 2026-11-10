@@ -1,3 +1,10 @@
+---
+name: self-verifier
+description: Judge task postconditions from current evidence, marking unsupported outcomes unknown. Use at milestones, artifact observations, or before the Actor finishes.
+metadata:
+  modularcua.kind: egc-module
+---
+
 # Self Verifier module
 
 - Purpose: independently judge specified postconditions from current evidence.

@@ -1,3 +1,10 @@
+---
+name: structured-state
+description: Maintain a compact, evidence-linked state with freshness and provenance. Use when interpreting new screenshots or updating environment facts.
+metadata:
+  modularcua.kind: egc-module
+---
+
 # Structured State module
 
 - Purpose: maintain a compact evidence-linked state, with deterministic storage, freshness invalidation, and model-proposed visual facts.
