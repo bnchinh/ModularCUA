@@ -1,0 +1,133 @@
+diff --git a/desktop_env/controllers/python.py b/desktop_env/controllers/python.py
+index c9d2396..3e61aca 100644
+--- a/desktop_env/controllers/python.py
++++ b/desktop_env/controllers/python.py
+@@ -425,11 +425,13 @@ class H264StreamSession:
+ class PythonController:
+     def __init__(self, vm_ip: str,
+                  server_port: int,
+-                 pkgs_prefix: str = PYAUTOGUI_PKGS_PREFIX):
++                 pkgs_prefix: str = PYAUTOGUI_PKGS_PREFIX,
++                 action_request_timeout: float = 90.0):
+         self.vm_ip = vm_ip
+         self.server_port = server_port
+         self.http_server = f"http://{vm_ip}:{server_port}"
+         self.pkgs_prefix = pkgs_prefix  # fixme: this is a hacky way to execute python commands. fix it and combine it with installation of packages
++        self.action_request_timeout = max(1.0, float(action_request_timeout))
+         self.retry_times = 3
+         self.retry_interval = 5
+         self.recording_enabled = True
+@@ -655,7 +657,7 @@ class PythonController:
+         logger.error("Failed to get file.")
+         return None
+ 
+-    def execute_python_command(self, command: str) -> None:
++    def execute_python_command(self, command: str, timeout: float | None = None) -> None:
+         """
+         Executes a python command on the server.
+         It can be used to execute the pyautogui commands, or... any other python command. who knows?
+@@ -663,11 +665,12 @@ class PythonController:
+         # command_list = ["python", "-c", self.pkgs_prefix.format(command=command)]
+         command_list = ["python", "-c", self.pkgs_prefix.format(command=command)]
+         payload = json.dumps({"command": command_list, "shell": False})
++        request_timeout = self.action_request_timeout if timeout is None else max(1.0, float(timeout))
+ 
+         for _ in range(self.retry_times):
+             try:
+                 response = requests.post(self.http_server + "/execute", headers={'Content-Type': 'application/json'},
+-                                         data=payload, timeout=90)
++                                         data=payload, timeout=request_timeout)
+                 if response.status_code == 200:
+                     logger.info("Command executed successfully: %s", response.text)
+                     return response.json()
+diff --git a/desktop_env/desktop_env.py b/desktop_env/desktop_env.py
+index 7181c0a..206ca3f 100644
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -51,6 +51,7 @@ class DesktopEnv(gym.Env):
+             use_public_ip: bool = False,
+             force_disable_vnc: bool = False,
+             force_disable_recording: bool = False,
++            action_request_timeout: float = 90.0,
+     ):
+         """
+         Args:
+@@ -79,6 +80,7 @@ class DesktopEnv(gym.Env):
+         self.enable_proxy = enable_proxy  # Store proxy enablement setting
+         self.force_disable_vnc = force_disable_vnc
+         self.force_disable_recording = force_disable_recording
++        self.action_request_timeout = max(1.0, float(action_request_timeout))
+         self.volume_size = volume_size
+         self.client_password = client_password or "osworld-public-evaluation"
+ 
+@@ -194,7 +196,11 @@ class DesktopEnv(gym.Env):
+                 self.chromium_port = int(vm_ip_ports[2])
+                 self.vnc_port = int(vm_ip_ports[3])
+                 self.vlc_port = int(vm_ip_ports[4])
+-            self.controller = PythonController(vm_ip=self.vm_ip, server_port=self.server_port)
++            self.controller = PythonController(
++                vm_ip=self.vm_ip,
++                server_port=self.server_port,
++                action_request_timeout=self.action_request_timeout,
++            )
+             self.setup_controller = SetupController(vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port, vlc_port=self.vlc_port, cache_dir=self.cache_dir_base, client_password=self.client_password, screen_width=self.screen_width, screen_height=self.screen_height)
+             self._finalize_volume()
+ 
+diff --git a/desktop_env/providers/docker/provider.py b/desktop_env/providers/docker/provider.py
+index 03dc710..8ec0420 100644
+--- a/desktop_env/providers/docker/provider.py
++++ b/desktop_env/providers/docker/provider.py
+@@ -33,6 +33,12 @@ class DockerProvider(Provider):
+         self.vlc_port = None
+         self.container = None
+         self.environment = {"DISK_SIZE": "32G", "RAM_SIZE": "4G", "CPU_CORES": "4"}  # Modify if needed
++        storage_dir = os.getenv("OSWORLD_DOCKER_STORAGE_DIR")
++        self.external_storage_dir = Path(storage_dir).expanduser().resolve() if storage_dir else None
++        if self.external_storage_dir is not None and not self.external_storage_dir.is_dir():
++            raise ValueError(
++                "OSWORLD_DOCKER_STORAGE_DIR must name an existing per-run directory"
++            )
+ 
+         temp_dir = Path(os.getenv('TEMP') if platform.system() == 'Windows' else '/tmp')
+         self.lock_file = temp_dir / "docker_port_allocation.lck"
+@@ -143,7 +149,17 @@ class DockerProvider(Provider):
+                         os.path.abspath(path_to_vm): {
+                             "bind": "/System.qcow2",
+                             "mode": "ro"
+-                        }
++                        },
++                        **(
++                            {
++                                str(self.external_storage_dir): {
++                                    "bind": "/storage",
++                                    "mode": "rw",
++                                }
++                            }
++                            if self.external_storage_dir is not None
++                            else {}
++                        ),
+                     },
+                     ports={
+                         8006: self.vnc_port,
+@@ -151,7 +167,20 @@ class DockerProvider(Provider):
+                         9222: self.chromium_port,
+                         8080: self.vlc_port
+                     },
+-                    detach=True
++                    detach=True,
++                    **(
++                        {
++                            "entrypoint": [
++                                "/bin/bash",
++                                "-lc",
++                                "mkdir -p /storage && "
++                                "ln -sfn /storage/boot.qcow2 /boot.qcow2 && "
++                                "exec /usr/bin/tini -s /run/entry.sh",
++                            ]
++                        }
++                        if self.external_storage_dir is not None
++                        else {}
++                    ),
+                 )
+ 
+             logger.info(f"Started container with ports - VNC: {self.vnc_port}, "

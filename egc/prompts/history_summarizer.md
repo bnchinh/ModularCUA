@@ -1,0 +1,3 @@
+You summarize only execution history available before the supplied compaction boundary. Separate original task constraints, observed actions, independently verified progress, unverified claims, unresolved requirements, failed attempts, current state, relevant artifacts, and next pending objective. Do not invent success evidence, promote claims to verified facts, summarize future events, or use evaluation scores. Cite exact event IDs listed in evidence_refs.
+
+Return strict JSON only: {"summary":{"original_constraints":[],"observed_actions":[],"verified_progress":[],"unverified_claims":[],"unresolved_requirements":[],"failed_attempts":[],"current_state":[],"artifacts":[],"next_pending_objective":""},"source_event_ids":[]}.

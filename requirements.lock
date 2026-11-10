@@ -1,0 +1,5 @@
+# Host dependencies used in the validated workspace environment.
+openai==2.41.0
+PyYAML==6.0.3
+ipython==9.8.0
+pytest==9.0.3

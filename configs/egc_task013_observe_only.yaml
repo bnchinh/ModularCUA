@@ -1,0 +1,4 @@
+name: modularcua-egc-observe-only
+extends: egc_observe_only.yaml
+environment:
+  task_id: "013"

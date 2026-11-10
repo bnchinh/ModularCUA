@@ -1,0 +1,17 @@
+name: modularcua-egc-observe-only
+extends: core_v0.yaml
+environment:
+  task_id: "001"
+egc:
+  max_aux_tokens: 2048
+  visual_state_every_n_screenshots: 3
+  recovery_repeat_threshold: 3
+  modules:
+    requirement_contracts: true
+    contract_updater: true
+    structured_state: true
+    provenance_tracker: true
+    self_verifier: true
+    recovery_planner: true
+    termination: true
+    history_summarizer: true

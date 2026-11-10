@@ -1,0 +1,37 @@
+name: modularcua-core-v0
+system_prompt: ModularCUA/prompts/osworld_ipython_system.md
+model:
+  endpoint: http://localhost:8000/v1 # Replace in a local config for your serving endpoint.
+  api_key_env: OPENAI_API_KEY
+  model: qwen38-27b
+  revision: 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0
+  temperature: null # Prime reference omitted temperature; vLLM server default applies.
+  top_p: null
+  max_tokens: 32000
+  context_window: 131072
+  request_timeout_seconds: 360
+agent:
+  max_model_steps: 150
+  max_tool_seconds: 120
+  max_tool_output_chars: 30000
+  compact_after_messages: 50
+  recent_messages_to_keep: 12
+environment:
+  release: OSWorld-v2.1
+  task_id: "001"
+  provider: docker
+  action_space: pyautogui
+  observation_type: screenshot
+  screen_size: [1920, 1080]
+  headless: true
+  qcow2: docker_vm_data/osworld-v2-ubuntu-x86.qcow2
+  timeout_seconds: 5400
+capabilities:
+  source: ModularCUA/src/modularcua/host/capabilities.py
+modules:
+  planning: false
+  memory: false
+  verification: false
+  recovery: false
+  skills: false
+  subagents: false

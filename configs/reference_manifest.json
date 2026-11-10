@@ -1,0 +1,66 @@
+{
+  "model": {
+    "repo": "Qwen/Qwen3.8-27B",
+    "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    "model_id": "qwen38-27b",
+    "checkpoint_path": "<local model path; weights not included>"
+  },
+  "serving": {
+    "vllm": "0.33.0",
+    "transformers": "5.20.2",
+    "torch": "2.14.0+cu130",
+    "tensor_parallel_size": 4,
+    "dtype": "bfloat16",
+    "max_model_len": 131072,
+    "max_num_seqs": 1,
+    "gpu_memory_utilization": 0.9,
+    "reasoning_parser": "qwen3",
+    "tool_call_parser": "qwen3_coder",
+    "enable_auto_tool_choice": true,
+    "vllm_use_flashinfer_sampler": false
+  },
+  "prime_reference": {
+    "commit": "a9b5d88b50db50860088772a408e867f8071b507",
+    "version": "0.8.0-beta.546.1.a9b5d88",
+    "method": "Agent-S Prime episode harness",
+    "max_prime_model_steps": 150,
+    "timeout_seconds": 5400
+  },
+  "agent_s4": {
+    "commit": "0fff0e634869dab72027435b4586e62300185d41",
+    "seed": "osworld_setup/s4/seeds/combined",
+    "seed_context_compaction_sha256": "7f193a957cd04230fedb0897f6bdfc4f2ce13d406faa93a56c7bb5f68b273407"
+  },
+  "benchmark": {
+    "release": "OSWorld-v2.1",
+    "task_id": "001",
+    "task_revision": "0a1aadad95aa79b00b3783e717d865089ab06e26",
+    "task_class_sha256": "9f8731d02aacb37f6eed0e6e4c7738758c3d7c9fb1b1fa83a9ea08751af19839",
+    "assets_revision": "384b3834faba5700a7b589e6cc181490c9808949",
+    "assets": {
+      "task_001/task_001_thunderbird-profile_fixed.tar.gz": "12fb0ff9786d1e1379de62455ce16989400306e3962a15ac3e3002bf3093eb05",
+      "task_001/initial_calendar.ics": "f41735e9a6d1f3d1a5ee833c640aaa742ba816f6a9482fae0d18fe86d4df6e74",
+      "task_001/gold_calendar.ics": "203f9ff6daddbb4dc41d2f2550d6f25bcf9e6e78ddcf36650fb1e4ba1542b081"
+    },
+    "provider": "local Docker/QEMU",
+    "qcow2": "docker_vm_data/osworld-v2-ubuntu-x86.qcow2",
+    "qcow2_sha256": "28b617987f3edf14edd835069cdde6a6e4708be8e4ae4eb957200d5da335186a"
+  },
+  "generation": {
+    "temperature": null,
+    "top_p": null,
+    "max_output_tokens": 32000,
+    "context_window": 131072,
+    "note": "Prime's pinned local endpoint configuration omitted temperature/top_p; null means the same server defaults apply."
+  },
+  "archived_prime_task001": {
+    "official_partial_score": 1.0,
+    "official_binary_success": true,
+    "model_turns": 46,
+    "ipython_tool_calls": 51,
+    "elapsed_seconds": 811.0279030799866,
+    "vllm_requests": 47,
+    "input_tokens": 1681209,
+    "output_tokens": 23589
+  }
+}

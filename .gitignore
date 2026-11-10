@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ModularCUA local configuration and experiment outputs
+configs/local.yaml
+local.yaml
+experiments/
+artifacts/
+
