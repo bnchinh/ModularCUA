@@ -13,7 +13,7 @@ The local checkpoint path in the reference manifest is redacted.
 - `IMPLEMENTATION_STATUS.md` — `51348685afdc3a7c4ff8d9f51c29455c0299a994613721c5e033b92f9394bfc1`
 - `LICENSE` — `98e34fd5ae7f951537798471058854a9e7490c392d64af94e69a6ec9ccafb263`
 - `PRIME_COMPONENT_MAPPING.md` — `09ee407bb2209b32935bdcfef93e0c31d795dd6eec758d299bb826a5aee0de8e`
-- `README.md` — `d28f44034c5000b0ae2122ebb491e17f2148104f21c70cbc044614788bb6a8fc`
+- `README.md` — `5b01dfd0ff666cbb60e4e09e8015699b81c4fea06ff072377a1de32cc3440b2c`
 - `configs/core_v0.yaml` — `26811891736c54939df74bafb6b113b607ace7439727678b01849f9888064ffc`
 - `configs/egc_observe_only.yaml` — `9884e4fe26dc77c3848775a6041ef079d073105c862c17b60ae4c699fa73640c`
 - `configs/egc_task013_observe_only.yaml` — `3463c98a6aa4b7958b705e71bacd24e11470812ef9c240ebf5c5bf097059041e`
